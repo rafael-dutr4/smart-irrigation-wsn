@@ -7,7 +7,7 @@
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
 
 constexpr char DEFAULT_HOST[] = "";
-constexpr int DEFAULT_CHANNEL = 11;
+constexpr int DEFAULT_CHANNEL = 9;
 
 constexpr char NODE_NAME[] = "ESP32-NODE-GATEAWAY";
 constexpr int BLUE_LED_PIN = 32;
