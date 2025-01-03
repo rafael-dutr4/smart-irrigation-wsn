@@ -9,12 +9,11 @@
 constexpr char DEFAULT_HOST[] = "";
 constexpr int DEFAULT_CHANNEL = 11;
 
-constexpr char NODE_NAME[] = "ESP32-NODE-SOIL-MOISTURE";
+constexpr char NODE_NAME[] = "ESP32-NODE-GATEAWAY";
 constexpr int BLUE_LED_PIN = 32;
-constexpr int RESET_CONFIGURATION_PIN = 14;
 
-String BACKEND_HOST;
-int WIFI_CHANNEL;
+String backend_host;
+int wifi_channel;
 
 enum payload_type {
   soilMoisture,
@@ -41,7 +40,7 @@ NodePayload payload;
 WiFiManager wm;
 
 WiFiManagerParameter backend_host_field;
-WiFiManagerParameter wifi_channel;
+WiFiManagerParameter wifi_channel_field;
 
 String getParam(String name){
   String value;
@@ -52,8 +51,8 @@ String getParam(String name){
 }
 
 void save_params() {
-  BACKEND_HOST = getParam("backend_host");
-  WIFI_CHANNEL = getParam("wifi_channel").toInt();
+  backend_host = getParam("backend_host");
+  wifi_channel = getParam("wifi_channel").toInt();
 }
 
 void setup_wifi() {
@@ -62,10 +61,10 @@ void setup_wifi() {
   WiFi.setSleep(false);
 
   new (&backend_host_field) WiFiManagerParameter("backend_host", "Host para sincronizar os dados", DEFAULT_HOST, 140, "");
-  new (&wifi_channel) WiFiManagerParameter("wifi_channel", "Canal WiFi (quando desconectado)", String(DEFAULT_CHANNEL).c_str(), 2, "type='number'");
+  new (&wifi_channel_field) WiFiManagerParameter("wifi_channel", "Canal WiFi (quando desconectado)", String(DEFAULT_CHANNEL).c_str(), 2, "type='number'");
 
   wm.addParameter(&backend_host_field);
-  wm.addParameter(&wifi_channel);
+  wm.addParameter(&wifi_channel_field);
   wm.setSaveParamsCallback(save_params);
   wm.setSaveConfigCallback(save_params);
   wm.setDarkMode(true); 
@@ -76,7 +75,7 @@ void setup_wifi() {
   if(!res) {
     Serial.println("Failed to connect to the WiFi or hit timeout");
     esp_wifi_set_promiscuous(true);
-    WiFi.setChannel(WIFI_CHANNEL);
+    WiFi.setChannel(wifi_channel);
     esp_wifi_set_promiscuous(false);
   } 
   else {
@@ -89,6 +88,7 @@ void setup_wifi() {
 
 void on_receive_message(const esp_now_recv_info_t* node_info, const uint8_t* incoming_data, int len) {
     memcpy(&payload, incoming_data, sizeof(payload));
+    Serial.println("Mensagem recebida.");
 
     switch (payload.type){
       case soilMoisture:
@@ -141,8 +141,8 @@ void setup() {
   delay(1000);
 
   Serial.println("Starting setup...");
-  BACKEND_HOST = DEFAULT_HOST;
-  WIFI_CHANNEL = DEFAULT_CHANNEL;
+  backend_host = DEFAULT_HOST;
+  wifi_channel = DEFAULT_CHANNEL;
   last_soil_moisture = 0;
   last_water_level = 0;
   last_solenoid_state = 0;
@@ -193,7 +193,7 @@ void send_variable_to_backend(String type){
   String payload;
   serializeJson(json_doc, payload);
 
-  String url = BACKEND_HOST + "/variavel";
+  String url = backend_host + "/variavel";
   send_to_backend(payload, url);
 }
 
@@ -205,38 +205,8 @@ void send_solenoid_state_to_backend(){
   String payload;
   serializeJson(json_doc, payload);
 
-  String url = BACKEND_HOST + "/solenoide";
+  String url = backend_host + "/solenoide";
   send_to_backend(payload, url);
-}
-
-void check_reset_button(){
-  if ( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ) {
-    delay(50);
-    if( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ){
-      Serial.println("Button Pressed");
-      delay(10000);
-      if( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ){
-        Serial.println("Button Held");
-        Serial.println("Erasing Config, restarting");
-        wm.resetSettings();
-        ESP.restart();
-      }
-      
-      Serial.println("Starting config portal");
-      wm.setConfigPortalTimeout(120);
-      
-      backend_host_field.setValue(BACKEND_HOST.c_str(), 140);
-      char wifi_channel_buf[3];
-      itoa(WIFI_CHANNEL, wifi_channel_buf, 10);
-      wifi_channel.setValue(wifi_channel_buf, 2);
-      
-      if (!wm.startConfigPortal(NODE_NAME, "password")) {
-        delay(3000);
-      } else {
-        WiFi.disconnect();
-      }
-    }
-  }
 }
 
 void loop() {
@@ -252,6 +222,5 @@ void loop() {
     send_solenoid_state_to_backend();
   } 
 
-  check_reset_button();
   delay(500);
 }
