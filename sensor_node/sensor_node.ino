@@ -8,21 +8,22 @@
 
 constexpr char NODE_NAME[] = "ESP32-NODE-SOIL-MOISTURE";
 constexpr uint8_t CONTROL_NODE_MAC_ADDRESS[] = {0xC8, 0x2E, 0x18, 0x68, 0x8B, 0xB4};
-constexpr uint8_t GATEWAY_NODE_MAC_ADDRESS[] = {0x88, 0x13, 0xBF, 0x00, 0xE5, 0xD0};
+constexpr uint8_t GATEWAY_NODE_MAC_ADDRESS[] = {0x8C, 0x4F, 0x00, 0x3D, 0x52, 0x84};
 
 constexpr int SENSOR_MAX_VALUE = 4095;
 constexpr int SENSOR_MIN_VALUE = 0;
+constexpr int DEFAULT_INTERVAL_READ = 300;
+constexpr int DEFAULT_NO_MAX_OF_TRIES = 20;
+constexpr int DEFAULT_WIFI_CHANNEL = 9;
 
 constexpr int SENSOR_PIN = 34;
 constexpr int HIGH_SENSOR_PIN = 32;
 constexpr int BLUE_LED_PIN = 27;
 constexpr int GREEN_LED_PIN = 13;
-constexpr int RESET_CONFIGURATION_PIN = 14;
 
-int READ_INTERVAL_SECONDS;
-int NO_OF_SAMPLES;
-int NO_MAX_OF_RETRIES;
-int WIFI_CHANNEL;
+int read_interval_seconds;
+int no_max_of_retries;
+int wifi_channel;
 
 bool waiting_gateway_ack = false;
 bool waiting_control_node_ack = false;
@@ -54,25 +55,25 @@ NodePayload payload;
 WiFiManager wm;
 
 WiFiManagerParameter read_interval_seconds_field;
-WiFiManagerParameter no_of_samples_field;
 WiFiManagerParameter no_max_of_entries_field;
-WiFiManagerParameter wifi_channel;
+WiFiManagerParameter wifi_channel_field;
 
 String getParam(String name){
-  //read parameter from server, for customhmtl input
   String value;
   if(wm.server->hasArg(name)) {
     value = wm.server->arg(name);
   }
+  Serial.print(name);
+  Serial.print(":");
+  Serial.println(value);
   return value;
 }
 
 void save_params() {
   Serial.println("Saving parameters");
-  READ_INTERVAL_SECONDS = getParam("read_interval_seconds").toInt();
-  NO_OF_SAMPLES = getParam("no_of_samples").toInt();
-  NO_MAX_OF_RETRIES = getParam("no_max_of_entries").toInt();
-  WIFI_CHANNEL = getParam("wifi_channel").toInt();
+  read_interval_seconds = getParam("read_interval_seconds").toInt();
+  no_max_of_retries = getParam("no_max_of_entries").toInt();
+  wifi_channel = getParam("wifi_channel").toInt();
 }
 
 void setup_wifi() {
@@ -80,15 +81,15 @@ void setup_wifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
-  new (&read_interval_seconds_field) WiFiManagerParameter("read_interval_seconds", "Intervalo entre leituras (segundos)", "300", 4, "type='number'");
-  new (&no_of_samples_field) WiFiManagerParameter("no_of_samples", "Número de amostras por leitura", "1", 3, "type='number'");
-  new (&no_max_of_entries_field) WiFiManagerParameter("no_max_of_entries", "Máximo de reenvios de dados", "10", 3, "type='number'");
-  new (&wifi_channel) WiFiManagerParameter("wifi_channel", "Canal WiFi (quando desconectado)", "11", 2, "type='number'");
+  new (&read_interval_seconds_field) WiFiManagerParameter("read_interval_seconds", "Intervalo entre leituras (segundos)", String(DEFAULT_INTERVAL_READ).c_str(), 4, "type='number'");
+  new (&no_max_of_entries_field) WiFiManagerParameter("no_max_of_entries", "Máximo de reenvios de dados", String(DEFAULT_NO_MAX_OF_TRIES).c_str(), 3, "type='number'");
+  new (&wifi_channel_field) WiFiManagerParameter("wifi_channel", "Canal WiFi (quando desconectado)", String(DEFAULT_WIFI_CHANNEL).c_str(), 2, "type='number'");
+
+  wm.resetSettings();
 
   wm.addParameter(&read_interval_seconds_field);
-  wm.addParameter(&no_of_samples_field);
   wm.addParameter(&no_max_of_entries_field);
-  wm.addParameter(&wifi_channel);
+  wm.addParameter(&wifi_channel_field);
 
   wm.setSaveParamsCallback(save_params);
   wm.setSaveConfigCallback(save_params);
@@ -102,15 +103,18 @@ void setup_wifi() {
   // Open configuration portal.
   res = wm.autoConnect(NODE_NAME, "password"); 
   esp_wifi_set_promiscuous(true);
-  WiFi.setChannel(WIFI_CHANNEL);
+  WiFi.setChannel(wifi_channel);
   esp_wifi_set_promiscuous(false);
 
   Serial.println("\nWi-Fi setup complete.");
 }
 
-void on_message_sent(const uint8_t* mac_addr, esp_now_send_status_t status) {  
+void on_message_sent(const uint8_t* mac_addr, esp_now_send_status_t status) { 
+  Serial.print("Try:");
+  Serial.println(no_of_retries); 
   switch (status) {
     case ESP_NOW_SEND_SUCCESS:
+      Serial.println("Successfully sent");
       no_of_retries = 1;
       if (waiting_control_node_ack) {
         digitalWrite(GREEN_LED_PIN, HIGH);
@@ -120,13 +124,17 @@ void on_message_sent(const uint8_t* mac_addr, esp_now_send_status_t status) {
       }    
       break;
     case ESP_NOW_SEND_FAIL:
-      if (no_of_retries == NO_MAX_OF_RETRIES) {
+      Serial.println("Error on sent");
+      Serial.println(no_max_of_retries);
+      if (no_of_retries >= no_max_of_retries) {
+        Serial.println("Stopping");
         no_of_retries = 1;
         break;
       }
       no_of_retries++;
       
       // Force a resend
+      Serial.println("Trying again");
       if (waiting_control_node_ack) {
         send_to_control_node = true;
       } else {
@@ -173,7 +181,6 @@ void setup_sensor() {
   pinMode(HIGH_SENSOR_PIN, OUTPUT);
   pinMode(BLUE_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
-  pinMode(RESET_CONFIGURATION_PIN, INPUT);
 
   digitalWrite(HIGH_SENSOR_PIN, LOW);
   digitalWrite(BLUE_LED_PIN, LOW);
@@ -195,22 +202,17 @@ void print_node_info() {
 long read_sensor_data() {
   digitalWrite(HIGH_SENSOR_PIN, HIGH);
   delay(5000);
-
-  long total = 0;
-  for (int i = 0; i < NO_OF_SAMPLES; i++) {
-    total += analogRead(SENSOR_PIN);
-    delay(500);
-  }
-
+  long sensor_read = analogRead(SENSOR_PIN);
+  delay(500);
   digitalWrite(HIGH_SENSOR_PIN, LOW);
+  
   previous_read_time = time(NULL);
-  long average = total / NO_OF_SAMPLES;
-  Serial.printf("Sensor Resistance: %ld\n", average);
-  return map(average, SENSOR_MIN_VALUE, SENSOR_MAX_VALUE, 100, 0);
+  Serial.printf("Sensor Resistance: %ld\n", sensor_read);
+  return map(sensor_read, SENSOR_MIN_VALUE, SENSOR_MAX_VALUE, 100, 0);
 }
 
 bool is_time_to_read() {
-  return difftime(time(NULL), previous_read_time) >= READ_INTERVAL_SECONDS;
+  return difftime(time(NULL), previous_read_time) >= read_interval_seconds;
 }
 
 void send_esp_now_data(const uint8_t* mac_address) {
@@ -234,51 +236,18 @@ void setup() {
   delay(1000);
 
   Serial.println("Starting setup...");
-  // BACKEND_ENDPOINT = "";
-  // READ_INTERVAL_SECONDS = 300; // 5 minutes
-  // NO_OF_SAMPLES = 1;
-  // NO_MAX_OF_RETRIES = 10; // 5 minutes
-  previous_read_time -= READ_INTERVAL_SECONDS;
+
+  read_interval_seconds = DEFAULT_INTERVAL_READ;
+  no_max_of_retries = DEFAULT_NO_MAX_OF_TRIES;
+  wifi_channel = DEFAULT_WIFI_CHANNEL;
 
   setup_wifi();
   setup_esp_now();
   setup_sensor();
+
+  previous_read_time -= read_interval_seconds;
   Serial.println("Setup complete.");
   print_node_info();
-}
-
-void check_reset_button(){
-  if ( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ) {
-    delay(50);
-    if( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ){
-      Serial.println("Button Pressed");
-      delay(10000);
-      if( digitalRead(RESET_CONFIGURATION_PIN) == HIGH ){
-        Serial.println("Button Held");
-        Serial.println("Erasing Config, restarting");
-        wm.resetSettings();
-        ESP.restart();
-      }
-      
-      Serial.println("Starting config portal");
-      wm.setConfigPortalTimeout(120);
-
-      char read_interval_seconds_buf[5];
-      itoa(READ_INTERVAL_SECONDS, read_interval_seconds_buf, 10);
-      read_interval_seconds_field.setValue(read_interval_seconds_buf, 4);
-      char no_of_samples_buf[5];
-      itoa(NO_OF_SAMPLES, no_of_samples_buf, 4);
-      no_of_samples_field.setValue(no_of_samples_buf, 3);
-      char no_max_of_retries_buf[5];
-      itoa(NO_MAX_OF_RETRIES, no_max_of_retries_buf, 10);
-      no_max_of_entries_field.setValue(no_max_of_retries_buf, 3);
-      char wifi_channel_buf[3];
-      itoa(WIFI_CHANNEL, wifi_channel_buf, 10);
-      wifi_channel.setValue(wifi_channel_buf, 2);
-
-      wm.startConfigPortal(NODE_NAME, "password");
-    }
-  }
 }
 
 void loop() {
@@ -296,6 +265,5 @@ void loop() {
     }
   }
 
-  check_reset_button();
   delay(500);
 }
